@@ -231,6 +231,8 @@ export class LipSyncApi {
         for(const item of planned){
           try{
             const frame=item.faceDetection!.status==="planned"?item.faceDetection!.frame:0,image=await previewLipSyncFrame(source,mediaRoot,item.shotId,item.lineIndex,frame,signal);
+            // Re-review O-new-1: read again for each line, since an earlier line's detection may have taken up to a minute.
+            latest=await current();
             try{assertLipSyncPermission(studioLipSyncDetectionPlan(source,list,item,{frame,width:image.width,height:image.height,rgbSha256:image.rgbSha256},policy!,storage),latest);}
             catch(error){skipped.push({shotId:item.shotId,lineIndex:item.lineIndex,reason:(error as Error).message,stage:"face-detection"});continue;}
             const base={sourceJobId:source.jobId,shotId:item.shotId,lineIndex:item.lineIndex,rgbSha256:image.rgbSha256,policyRevision:finder!.revision};
