@@ -49,6 +49,8 @@ import {configuredAudioPolicies} from "../../generator/src/audio-config";
 import {PostgresAudioLedger} from "../../storage/src/audio-ledger";
 import {PostgresLipSyncLedger} from "../../storage/src/lipsync-ledger";
 import {LipSyncApi} from "./lipsync-api";
+import {studioLipSyncEnabled} from "../../planner/src/lipsync-worklist";
+import {retainLipSyncSource} from "../../planner/src/lipsync";
 import {SoundApi} from "./sound-api";
 import {AmbienceBusy,handleAmbience} from "./sound-ambience";
 import {GraphicApi,graphicJobView} from "./graphic-api";
@@ -265,6 +267,11 @@ export function artifactPermission(stage: JobStage): (job: Job, project: Paramet
   const unknown: never = stage;
   void unknown;
   return () => { throw new Error("This job's stage has no media permission rule."); };
+}
+/** HV-022-23: only a voiced cut the work list can read (the selected output, with an applied cast take) asks for one. */
+function studioLipSyncSource(job: Job, project: Parameters<typeof assertSelectedOutput>[1]): boolean {
+  try { assertSelectedOutput(job, project, {jobId: job.id, outputRevision: outputRevision(job)}); return retainLipSyncSource(job).dialogue.lines.some(line => line.audition); }
+  catch { return false; }
 }
 
 function envInt(name: string, fallback: number): number {
@@ -1802,6 +1809,9 @@ export function createApiServer(options: ApiServerOptions = {}): ApiServer {
           const project = token ? await projects.authorize(token) : null;
           const job = project ? await scopedJobs(project.id).get(parts[2]) : undefined;
           if (!job || !project || project.id !== job.projectId) return response({ error: "not found" }, 404);
+          // HV-022-23: a finished voiced cut says the studio may ask for its lip-sync work list, only while the
+          // operator switches it on (HV_STUDIO_LIPSYNC=1). Off, the view is exactly as before.
+          if (studioLipSyncEnabled() && job.stage === "dialogue-replacement" && job.status === "done" && studioLipSyncSource(job, project)) return response({...await audioJobView(job, project), studioLipSync: true});
           return response(await audioJobView(job, project));
         }
 

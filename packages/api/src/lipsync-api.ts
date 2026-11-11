@@ -12,16 +12,33 @@ import {contentHash} from "../../generator/src/capabilities";
 import {LIPSYNC_CAPABILITY} from "../../generator/src/lipsync-capability";
 import {copyDialogueFiles} from "../../generator/src/dialogue-replacement";
 import {previewLipSyncFrame} from "../../generator/src/lipsync-media";
-import {configuredLipSyncPolicy,validateLipSyncPolicy,lipFail,lipRecord,lipId,lipNumber,lipSame} from "../../planner/src/lipsync-policy";
+import {configuredLipSyncPolicy,validateLipSyncPolicy,lipFail,lipRecord,lipId,lipNumber,lipSame,LipSyncError} from "../../planner/src/lipsync-policy";
 import {assertLipSyncPlayback,assertLipSyncPermission,createLipSyncPlan,retainLipSyncSource,lipSyncWindow,lipSyncCutaways,type LipSyncSelection,type LipSyncReview} from "../../planner/src/lipsync";
 import {assertSelectedOutput,outputRevision} from "../../planner/src/dialogue-selection";
 import {verifyOperatorGrant} from "./tokens";
+import {lipSyncWorkList,savedLipSyncFacePoints,studioLipSyncEnabled,studioLipSyncHoldUsd,studioLipSyncKey,studioLipSyncPlan,STUDIO_KEY_PREFIX,type LipSyncWorkItem} from "../../planner/src/lipsync-worklist";
+import {BudgetError} from "../../operator/src/index";
+import {assertFilmBudget} from "../../operator/src/film-budget";
+import type {LipSyncPolicy} from "../../planner/src/lipsync-policy";
 import {projectJobs} from "./project-jobs";
 
 interface Context {root:string;artifacts?:PostgresArtifactStore;ledger:CostLedger|PostgresCostLedger;lipLedger?:PostgresLipSyncLedger;monthlyBudgetUsd:number;filmCapUsd:number;featureCapUsd:number;
   store:(id:string)=>DurableJobStore|PostgresJobStore;view:(job:Job,project:Project)=>Promise<Record<string,unknown>>}
 const record=(value:unknown,keys:string[])=>{lipRecord(value,keys);return value;};
 /** Owner authorization happens at the route boundary and is repeated after media I/O. */
+/**
+ * HV-022-23: how the studio's work list answers a pass refused part-way through. Every pass admitted before it
+ * is committed and held, so once one is, every refusal -- the budget, a pass the ledger would not take, or an
+ * unexpected failure such as a lost database connection -- answers with what is already queued. An unexpected
+ * failure keeps its 500 (it is still an error to the operator) and keeps its own text out of the answer.
+ * A refusal before anything was admitted is answered as before: the budget's 429, otherwise the error itself.
+ */
+export function studioLipSyncStop(error:unknown,progress:boolean):{status:number;error:string;reason?:string}|undefined{
+  if(error instanceof BudgetError){const changed=/policy changed/.test(error.message);return {status:changed?409:429,error:error.message,reason:changed?"policy_changed":"budget_exhausted"};}
+  if(!progress)return undefined;
+  if(error instanceof LipSyncError)return {status:207,error:error.message};
+  return {status:500,error:"A later pass could not be queued just now. The passes listed here are queued and held."};
+}
 export class LipSyncApi {
   private inspections=0;
   constructor(private context:Context){}
@@ -45,11 +62,15 @@ export class LipSyncApi {
       await queue.reviewLipSync(selected.id,ratings as unknown as Pick<LipSyncReview,"mouthSync"|"faceStability"|"expression"|"decision"|"notes">,version,expectedOutputRevision);
       return {status:200,body:{job:await this.context.view((await queue.get(selected.id))!,latest)}};
     }
+    // HV-022-23: the studio's lip-sync work list, only while the operator switches it on. Off, the route is unknown, as before.
+    if(parts[1]==="work-list"&&studioLipSyncEnabled()&&["GET","POST"].includes(request.method))return this.workList(selected,request,project,refresh,body,currentPolicy);
     const preview=parts[1]==="preview"&&request.method==="POST",submit=parts.length===1&&request.method==="POST";
     if(!preview&&!submit&&!(parts.length===1&&request.method==="GET"))return {status:404,body:{error:"unknown lip-sync route"}};
     let requestHash:string|undefined,key:string|undefined;
     if(submit){const input=record(body,["idempotencyKey","generationApproved","sourceRevision","policyRevision","capabilityRevision","shotId","lineIndex","selection","operatorGrant"]);
       if(typeof input.idempotencyKey!=="string"||input.idempotencyKey.length<1||input.idempotencyKey.length>128||[...input.idempotencyKey].some(c=>c.charCodeAt(0)<33||c.charCodeAt(0)>126))lipFail("Use a new printable request key of 1–128 characters.");
+      // HV-022-23: the studio's passes own this prefix, so an owner key can never stand for, or collide with, one of them.
+      if(input.idempotencyKey.startsWith(STUDIO_KEY_PREFIX))lipFail("This request key prefix is reserved for the studio's lip-sync passes. Use a new request key.");
       key=project.id+":"+input.idempotencyKey;requestHash=contentHash({sourceJobId:selected.id,request:Object.fromEntries(Object.entries(input).filter(([k])=>k!=="idempotencyKey"))});
       const existing=(await projectJobs(this.context.store,project.id)).find(j=>j.idempotencyKey===key);if(existing){if(existing.stage!=="lip-sync"||existing.lipSync?.requestHash!==requestHash)lipFail("This request key belongs to another pass. Review a new request.");return {status:202,body:{jobId:existing.id,status:existing.status,stage:existing.stage}};}
       if(!lipLedger||!currentPolicy)return {status:503,body:{error:"Lip-sync generation needs the operator's PostgreSQL provider service and current policy."}};
@@ -74,6 +95,77 @@ export class LipSyncApi {
       if(decision.action==="reject")return {status:429,body:{error:decision.message,reason:decision.reason}};
       const job=await lipLedger!.admitLipSync(project.id,{id:crypto.randomUUID(),idempotencyKey:key!,projectId:project.id,tier,stage:"lip-sync",scriptText:source.film.scriptText,scriptVersion:source.film.scriptVersion,rightsAttestedAt:latest.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:source.dialogue.totalFrames,costCapUsd:currentPolicy!.heldUsd,budgetReservedUsd:currentPolicy!.heldUsd,retryPolicy:{maxRetries:2,backoffMs:1500},timeoutMs:30*60*1000,queueAction:decision.action,queueReason:decision.reason,lipSync:plan},configuredLipSyncPolicy,monthlyBudgetUsd,Date.now(),filmCapUsd);
       return {status:202,body:{jobId:job.id,status:job.status,stage:job.stage,heldUsd:currentPolicy!.heldUsd,actualUsd:null}};
+    }finally{this.inspections--;if(scratch&&realpathSync(scratch).startsWith(realpathSync(this.context.root)+sep+".lipsync-preview-"))rmSync(scratch,{recursive:true,force:true});}
+  }
+
+  /**
+   * HV-022-23: GET lists the voiced cut's lip-sync work (planner/src/lipsync-worklist.ts); POST queues its ready
+   * lines as the owner's own passes would be queued, one isolated lip-sync job each, from the same cut.
+   *
+   * The new passes' holds are summed and checked against the film's limit and the month's cap before the first
+   * is admitted; each is then checked again, and reserved, by the ledger's own admission under its lock. That
+   * second check is what enforces the caps: the first can pass and a concurrent admission still leave room for
+   * only some, so a list may be partly admitted, and the answer then says which (207, or 429 when the budget
+   * refused the rest). A ready line's saved face point is checked against this cut's decoded frame first; one
+   * that no longer matches is skipped, never guessed. Without a current policy or the PostgreSQL provider
+   * service nothing is queued or held.
+   *
+   * Only a pass created by this request is `admitted` and counted in `heldUsd`. A pass the ledger already held
+   * under the line's fixed key (a retry, or a concurrent request) is `reused`, and holds nothing new.
+   */
+  private async workList(selected:Job,request:Request,project:Project,refresh:()=>Promise<Project|null>,body:Record<string,unknown>|undefined,policy:LipSyncPolicy|undefined):Promise<{status:number;body:unknown}>{
+    const {store,lipLedger,monthlyBudgetUsd,ledger}=this.context,filmCapUsd=filmCapFor(project,this.context),queue=store(project.id);
+    if(request.method==="POST")record(body,["generationApproved","worklistRevision","operatorGrant"]);
+    assertSelectedOutput(selected,project,{jobId:selected.id,outputRevision:outputRevision(selected)});const source=retainLipSyncSource(selected);
+    const all=await projectJobs(this.context.store,project.id),list=lipSyncWorkList(source,{facePoints:savedLipSyncFacePoints(all),policy,studioPasses:all});
+    // A line that already holds a pass on this cut, the owner's or the studio's, is not queued again.
+    const holding=(item:LipSyncWorkItem)=>all.find(j=>j.lipSync&&j.lipSync.source.jobId===source.jobId&&j.lipSync.shotId===item.shotId&&j.lipSync.lineIndex===item.lineIndex&&!["failed","cancelled"].includes(j.status))?.id??null;
+    const queued=list.items.flatMap(item=>{const jobId=holding(item);return jobId?[{shotId:item.shotId,lineIndex:item.lineIndex,jobId}]:[];}),fresh=list.items.filter(item=>item.included&&!holding(item));
+    // A line whose studio pass failed or was cancelled is the owner's to retry under Direct lip-sync (`failed-pass`).
+    const failed=list.items.filter(item=>item.reason==="failed-pass").flatMap(item=>{const job=all.find(j=>j.idempotencyKey===project.id+":"+studioLipSyncKey(list,item));return job?[{shotId:item.shotId,lineIndex:item.lineIndex,jobId:job.id,status:job.status}]:[];});
+    const unavailable=!policy?"Lip-sync is switched on for the studio, but no current provider policy is configured. Nothing is queued or held."
+      :!lipLedger?"Lip-sync generation needs the operator's PostgreSQL provider service. Nothing is queued or held.":null;
+    const answer={enabled:!unavailable,unavailable,workList:list,queued,failed,newPasses:fresh.length,newHeldUsd:policy?studioLipSyncHoldUsd(fresh,policy):null};
+    if(request.method==="GET")return {status:200,body:answer};
+    if(unavailable)return {status:503,body:{error:unavailable}};
+    if(body!.generationApproved!==true||body!.worklistRevision!==list.revision)lipFail("Review the current lip-sync work list before queueing.");
+    if(!fresh.length)return {status:200,body:{...answer,admitted:[],reused:[],skipped:[],heldUsd:0,actualUsd:null}};
+    // The new passes' holds are checked together before any is admitted; the ledger enforces each again below.
+    const total=studioLipSyncHoldUsd(fresh,policy!);
+    assertFilmBudget({...await lipLedger!.filmSpend(project.id),capUsd:filmCapUsd},total);
+    if(await ledger.monthSpend()+await ledger.reservedUsd()+total>monthlyBudgetUsd+1e-9)throw new BudgetError("The studio's monthly generation budget cannot hold these lip-sync passes.");
+    if(this.inspections>=2)return {status:429,body:{error:"Two speaker frames are being checked. Try again shortly."}};
+    this.inspections++;let scratch:string|undefined;
+    try{
+      const signal=AbortSignal.any([request.signal,AbortSignal.timeout(120000)]),root=this.context.root;let mediaRoot=root;
+      if(this.context.artifacts){mkdirSync(root,{recursive:true});scratch=mkdtempSync(join(realpathSync(root),".lipsync-preview-"));mediaRoot=scratch;await copyDialogueFiles({id:source.jobId,projectId:project.id},[source.files.video],root,scratch,signal,this.context.artifacts);}
+      const verified:LipSyncWorkItem[]=[],skipped:{shotId:string;lineIndex:number;reason:string}[]=[];
+      for(const item of fresh){
+        const image=await previewLipSyncFrame(source,mediaRoot,item.shotId,item.lineIndex,item.selection!.frame,signal);
+        if(lipSame({width:image.width,height:image.height,rgbSha256:image.rgbSha256},{width:item.selection!.width,height:item.selection!.height,rgbSha256:item.selection!.rgbSha256}))verified.push(item);
+        else skipped.push({shotId:item.shotId,lineIndex:item.lineIndex,reason:"The saved face point's frame differs on this cut. Choose the face again under Direct lip-sync."});
+      }
+      const latest=await refresh(),current=await queue.get(source.jobId);
+      if(!latest||!current)lipFail("The retained source is unavailable. Reopen this project.");assertSelectedOutput(current,latest,{jobId:current.id,outputRevision:source.outputRevision});if(retainLipSyncSource(current).revision!==source.revision)lipFail("The source changed while its frames were being checked.");
+      const grant=typeof body!.operatorGrant==="string"?verifyOperatorGrant(body!.operatorGrant,project.id):null,tier:Tier=grant?"elevated":"free";
+      const admitted:{shotId:string;lineIndex:number;jobId:string}[]=[],reused:{shotId:string;lineIndex:number;jobId:string}[]=[];
+      const soFar=()=>({...answer,admitted,reused,skipped,heldUsd:studioLipSyncHoldUsd(admitted,policy!),actualUsd:null});
+      for(const item of verified){
+        try{
+          const plan=studioLipSyncPlan(source,list,item,policy!,this.context.artifacts?"s3":"local");assertLipSyncPermission(plan,latest);
+          const decision=new CapacityController(monthlyBudgetUsd).decide({tier,runningForProject:(await projectJobs(this.context.store,project.id)).filter(j=>j.status==="running").length,requestedShots:1,sceneCount:1,monthSpendUsd:await ledger.monthSpend()+await ledger.reservedUsd()});
+          if(decision.action==="reject")return {status:429,body:{...soFar(),error:decision.message,reason:decision.reason}};
+          const input={id:crypto.randomUUID(),idempotencyKey:project.id+":"+studioLipSyncKey(list,item),projectId:project.id,tier,stage:"lip-sync" as const,scriptText:source.film.scriptText,scriptVersion:source.film.scriptVersion,rightsAttestedAt:latest.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:source.dialogue.totalFrames,costCapUsd:policy!.heldUsd,budgetReservedUsd:policy!.heldUsd,retryPolicy:{maxRetries:2,backoffMs:1500},timeoutMs:30*60*1000,queueAction:decision.action,queueReason:decision.reason,lipSync:plan};
+          const job=await lipLedger!.admitLipSync(project.id,input,configuredLipSyncPolicy,monthlyBudgetUsd,Date.now(),filmCapUsd);
+          // The ledger returns the pass it already held under this key (a retry, or a concurrent request): no new hold.
+          (job.id===input.id?admitted:reused).push({shotId:item.shotId,lineIndex:item.lineIndex,jobId:job.id});
+        }catch(error){
+          // A pass refused mid-list leaves the earlier ones admitted and held: say which, never "nothing queued".
+          const stop=studioLipSyncStop(error,admitted.length+reused.length>0);if(!stop)throw error;
+          return {status:stop.status,body:{...soFar(),error:stop.error,...(stop.reason?{reason:stop.reason}:{}),stoppedAt:{shotId:item.shotId,lineIndex:item.lineIndex}}};
+        }
+      }
+      return {status:admitted.length?202:200,body:soFar()};
     }finally{this.inspections--;if(scratch&&realpathSync(scratch).startsWith(realpathSync(this.context.root)+sep+".lipsync-preview-"))rmSync(scratch,{recursive:true,force:true});}
   }
 }

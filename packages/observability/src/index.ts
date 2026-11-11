@@ -46,7 +46,7 @@ export const PROJECT_ROUTE_WORDS = ["accept","accepted","actor","adopt","ambienc
   "export","feature-film","frames","generation","graphics","hero","identity-locks","import","interchange","jobs","line-notes","lip-sync","motion-image","music-cues",
   "narration-source","original","picture","plan","preview","proposals","quote","read-through","recut","recut-preview","reference-lock","references","remove",
   "render-requests","renders","repair","restore","review","review-comments","review-links","reviews","revoke","rights","scene-cuts","scene-performance","screenplay",
-  "script","sequences","shares","sheets","sound-mixes","sounds","sources","spend","style-bible","subject-motion","takes","timeline-picture","versions"] as const;
+  "script","sequences","shares","sheets","sound-mixes","sounds","sources","spend","style-bible","subject-motion","takes","timeline-picture","versions","work-list"] as const;
 const PROJECT_WORDS = new Set<string>(PROJECT_ROUTE_WORDS);
 /** A project path's pattern, or null past any route's depth. */
 function projectPattern(parts: string[]): string | null {

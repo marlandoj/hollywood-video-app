@@ -28,7 +28,7 @@ import {narrationRead,narrationLineSource} from "../../packages/planner/src/narr
 import {narrationTrack,narrationSceneWindows,type NarrationTrack} from "../../packages/planner/src/narration-mix";
 
 export const LIPSYNC_POLICY=lipSyncPolicy({label:"Sync · closed fixture",accountRevision:"a".repeat(64),licenceEvidenceSha256:"b".repeat(64),priceEvidenceSha256:"c".repeat(64),outputHosts:["output.sync.so"],heldUsd:5,maxFrames:900,validFrom:"2026-01-01T00:00:00.000Z",expiresAt:"2099-01-01T00:00:00.000Z"});
-export function lipFixtureJob(plan:LipSyncPlan,id=crypto.randomUUID(),key=id):JobInput{return {id,projectId:plan.source.projectId,idempotencyKey:key,tier:"free",stage:"lip-sync",scriptText:plan.source.film.scriptText,scriptVersion:plan.source.film.scriptVersion,rightsAttestedAt:plan.source.film.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:plan.source.dialogue.totalFrames,costCapUsd:plan.policy.heldUsd,budgetReservedUsd:plan.policy.heldUsd,retryPolicy:{maxRetries:2,backoffMs:1},timeoutMs:60000,lipSync:plan};}
+export function lipFixtureJob(plan:LipSyncPlan,id:string=crypto.randomUUID(),key:string=id):JobInput{return {id,projectId:plan.source.projectId,idempotencyKey:key,tier:"free",stage:"lip-sync",scriptText:plan.source.film.scriptText,scriptVersion:plan.source.film.scriptVersion,rightsAttestedAt:plan.source.film.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,totalFrames:plan.source.dialogue.totalFrames,costCapUsd:plan.policy.heldUsd,budgetReservedUsd:plan.policy.heldUsd,retryPolicy:{maxRetries:2,backoffMs:1},timeoutMs:60000,lipSync:plan};}
 /** Entirely local synthetic qualification. No production policy or network call. */
 export async function createLipSyncFixture(root:string,withNarration=false){
   const projects=new ProjectService(join(root,"projects.json")),owner=projects.createAnonymousProject(),script="EXT. WALKWAY - DAY\n\nAn empty walkway.\n\nINT. GARDEN - DAY\n\nMarla waves.\n\nMARLA\nHello.\n\nKEVIN\nWelcome to our garden.\n\nEXT. PATH - DAY\n\nA quiet path.",actorId=crypto.randomUUID(),artifacts=join(root,"artifacts"),store=new DurableJobStore(join(root,"jobs.json"));
@@ -62,4 +62,47 @@ export async function completeLipSyncFixture(f:Awaited<ReturnType<typeof createL
   const provider=new SyncLipSyncProvider({apiKey:"closed-fixture-only",pollMs:1,fetchImpl:(async(url:unknown,init?:RequestInit)=>String(url).includes("output.sync.so")?new Response(video):Response.json(remote,{status:init?.method==="POST"?201:200})) as typeof fetch});
   const delivered=await provider.synthesize(f.plan,f.prepared,{video,audio},{authorize:async()=>({id:f.job.id,priceRevision:LIPSYNC_POLICY.priceRevision,heldUsd:LIPSYNC_POLICY.heldUsd}),assertCurrent:async()=>{},observe:async value=>{receipt=structuredClone(value);}}),output=await renderLipSyncVersion(f.job,f.prepared,delivered.video,delivered.delivery,f.artifacts,join(f.artifacts,f.job.projectId,f.job.id,"output"),async()=>{});
   f.store.checkpointLipSync(f.job.id,"fixture-lipsync",output);const done=f.store.complete(f.job.id,"fixture-lipsync",output);return {done,receipt:receipt!};
+}
+
+/**
+ * HV-022-23: a feature sequence whose plan places each line on its speaker's shot, voiced with closed-fixture takes,
+ * as two voiced cuts of the same picture. Scene 2 has four action beats and three speeches: MARLA on the shot whose
+ * action names her, KEVIN as a voice-over, and MARLA again. Entirely local; no policy or network call.
+ */
+export const PLACED_SCRIPT="EXT. WALKWAY - DAY\n\nAn empty walkway.\n\nINT. GARDEN - DAY\n\nThe garden gate stands open.\n\nMarla waves.\n\nMARLA\nHello.\n\nKevin waits by the gate.\n\nKEVIN (V.O.)\nWelcome home.\n\nMarla turns to the path.\n\nMARLA\nStay a while.";
+export async function createPlacedLipSyncFixture(root:string,placement:"speaker"|undefined="speaker"){
+  const {sequencePlan,sequenceRef}=await import("../../packages/planner/src/sequences");
+  const projects=new ProjectService(join(root,"projects.json")),owner=projects.createAnonymousProject(),script=PLACED_SCRIPT,artifacts=join(root,"artifacts"),store=new DurableJobStore(join(root,"jobs.json"));
+  const marla=crypto.randomUUID(),kevin=crypto.randomUUID();
+  projects.editScript(owner.token,script);projects.attestRights(owner.token);projects.saveCharacter(owner.token,marla,{...CAST_INPUT,name:"Marla",aliases:[]},0);projects.saveCharacter(owner.token,kevin,{...CAST_INPUT,name:"Kevin",aliases:[]},1);
+  const project=projects.snapshot().projects[0]!,casting=currentCasting(project.id,project.castingHistory),parsed=parseFountain(script);
+  const sequence=sequenceRef(sequencePlan(1,[{firstScene:1,lastScene:2,shots:parsed.scenes[0]!.action.length+parsed.scenes[1]!.action.length}],placement),1);
+  const base={tier:"free" as const,scriptVersion:1,scriptText:script,rightsAttestedAt:project.rightsAttestedAt,animaticJobId:null,animaticApprovedAt:null,retryPolicy:{maxRetries:0,backoffMs:1},timeoutMs:60000};
+  store.enqueue({...base,id:crypto.randomUUID(),projectId:project.id,idempotencyKey:"picture",stage:"animatic",totalFrames:120,costCapUsd:5,budgetReservedUsd:0,providerPlan:createProviderPlan("animatic",5),casting,direction:directionSnapshot(project.id,0,[],0),sequence});
+  const film=(await processNextJob(store,artifacts,{projects,ledger:new CostLedger(join(root,"ledger.json")),reviewQueue:new OperatorReviewQueue(join(root,"reviews.json"))}))!;
+  if(film.status!=="done")throw new Error(film.failureReason??film.cancelReason??"Fixture film failed");
+  const auditions=lineSources(parsed.scenes[1]!.dialogue).map((source,index)=>{
+    const line=compileAudioLine(source,{schema:"hv-audio-voice/1",provider:"cartesia",language:"en",voice:{id:AUDIO_POLICY.voiceId,catalogueRevision:AUDIO_POLICY.catalogueRevision,permissionRevision:AUDIO_POLICY.permissionRevision},controls:{speed:1,volume:1,emotion:"calm"},pronunciations:[]}),key="audio-"+index;
+    store.enqueue({...base,id:crypto.randomUUID(),projectId:project.id,idempotencyKey:key,stage:"audio-take",totalFrames:0,costCapUsd:.25,budgetReservedUsd:.25,casting,audioTake:audioTakePlan(1,source.character==="KEVIN"?kevin:marla,line,AUDIO_POLICY,"local")});
+    const audio=store.claimNext(Date.now(),{},{workerId:"fixture-audio"})!,delivered=createAudioDelivery(line,crypto.randomUUID(),AUDIO_PCM.subarray(0,14400*2),[{text:source.text,startSec:0,endSec:.25}],[{text:"h",startSec:0,endSec:.1}]);
+    const scratch=mkdtempSync(join(artifacts,".audio-")),output=prepareAudioMedia(audio,scratch,delivered.report,delivered.wav),target=join(artifacts,dirname(output.wavPath));mkdirSync(dirname(target),{recursive:true});renameSync(scratch,target);store.checkpointAudio(audio.id,"fixture-audio",output);
+    return retainAudition(store.completeAudio(audio.id,"fixture-audio",output));
+  });
+  const pinned=await inspectDialogueSource(film,artifacts),spoken=film.output!.shotRenders!.filter(r=>r.clip.speech?.lines.length);
+  const edits=spoken.map(shot=>({shotId:shot.shotId,index:0,sourceHash:shot.clip.speech!.lines[0]!.source.hash,audition:auditions.find(a=>a.take.line.source.text===shot.clip.speech!.lines[0]!.source.text)!}));
+  const voice=async(key:string)=>{
+    const plan=createDialogueReplacement(film,edits,pinned.revision,"retained-audio",pinned.files,Date.now(),undefined,audioTimelineRuntimeRevision());
+    store.enqueue({...base,id:crypto.randomUUID(),projectId:project.id,idempotencyKey:key,stage:"dialogue-replacement",totalFrames:dialogueSource(film).totalFrames,costCapUsd:0,budgetReservedUsd:0,dialogueReplacement:{source:film,plan,requestHash:plan.revision,storage:"local"}});
+    const dialogue=store.claimNext(Date.now(),{},{workerId:"fixture-dialogue"})!,result=await replaceLockedDialogue(film,plan,artifacts,dialogue.id,async()=>{}),output=await sealDialogueExport(dialogue,result,artifacts);store.checkpointDialogue(dialogue.id,"fixture-dialogue",output);
+    return store.complete(dialogue.id,"fixture-dialogue",output);
+  };
+  const first=await voice("dialogue-1"),second=await voice("dialogue-2");
+  writeFileSync(join(root,"audio-policy.json"),JSON.stringify({schema:"hv-audio-policies/1",policies:[AUDIO_POLICY]}));writeFileSync(join(root,"lipsync-policy.json"),JSON.stringify(LIPSYNC_POLICY));
+  return {projects,owner,project,marla,kevin,store,artifacts,film,first,second,spoken};
+}
+/** The owner's own pass on one line of a voiced cut, at a face point they chose on frame 0 of its window. Admitted, not run. */
+export async function ownerLipSyncPass(f:{store:DurableJobStore;artifacts:string},cut:import("../../packages/queue/src/index").Job,shotId:string,point={x:40,y:30}){
+  const retained=retainLipSyncSource(cut),preview=await previewLipSyncFrame(retained,f.artifacts,shotId,0,0);
+  const plan=createLipSyncPlan(retained,shotId,0,{frame:0,width:preview.width,height:preview.height,...point,rgbSha256:preview.rgbSha256},LIPSYNC_POLICY,"local",contentHash({owner:shotId}));
+  return f.store.enqueue(lipFixtureJob(plan));
 }

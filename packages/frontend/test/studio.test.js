@@ -225,6 +225,123 @@ test('the final is re-voiced with the cast\'s voices, one take per line, and sha
   expect(calls.at(-1).body).toMatchObject({jobId: 'voiced-1'});
 });
 
+// HV-022-23: only a voiced cut the server marks `studioLipSync` (the operator's HV_STUDIO_LIPSYNC=1) is lip-synced.
+function voicedFake(voicedView, lipSync = {}) {
+  const takes = () => ({enabled: true, nativeCapabilityRevision: 'native-rev',
+    characters: [{id: 'c-nora-000', profile: {voice: {id: 'en-US-JaneNeural'}}, voiceAvailable: true}],
+    voices: [{id: 'en-US-JaneNeural', provider: 'azure', policyRevision: 'policy-rev-0123456789'}],
+    lines: [{sceneIndex: 0, characterId: 'c-nora-000', unavailable: null, performanceRevision: null, source: {index: 0, hash: 'hash-0-0-' + 'x'.repeat(20)}}],
+    jobs: [{id: 'take-a', status: 'done'}]});
+  return fake({
+    'GET /api/projects/p1/audio-takes': takes,
+    'POST /api/projects/p1/audio-takes': () => ({jobId: 'take-a'}),
+    'GET /api/projects/p1/dialogue/final-1': () => ({sourceRevision: 'src', sourceFilesRevision: 'files', engineVersion: 'espeak', conversionEngineVersion: 'conv',
+      lines: [{shotId: 'shot-1-1', index: 0, sourceHash: 'l1', auditions: [{jobId: 'take-a', revision: 'ra', unavailable: null}]}]}),
+    'POST /api/projects/p1/dialogue/final-1': () => ({jobId: 'voiced-1'}),
+    'GET /api/jobs/voiced-1': () => voicedView,
+    ...lipSync,
+  });
+}
+const notesOf = state => state.finishNotes.filter(note => note.startsWith('Lip-sync'));
+
+test('switched off, a voiced cut asks nothing about lip-sync', async () => {
+  const {flow, route} = voicedFake({id: 'voiced-1', status: 'done', outputRevision: 'v'.repeat(64), output: {}});
+  await flow.pitch({script: 'x', format: 'reel', tone: '', rightsAttested: true});
+  await flow.plan([]);
+  await flow.approveLook(true);
+  const done = await flow.approveRoughCut();
+  expect(done.final.id).toBe('voiced-1');
+  expect(route().some(entry => entry.includes('/lip-sync'))).toBe(false);
+  expect(notesOf(done)).toEqual([]);
+});
+
+test('switched on, the crew queues the ready on-camera lines once and says what is held and what needs a face point', async () => {
+  const workList = {revision: 'w'.repeat(64), passes: 2, needFacePoint: 1, heldUsd: 10};
+  const {flow, calls} = voicedFake({id: 'voiced-1', status: 'done', outputRevision: 'v'.repeat(64), output: {}, studioLipSync: true}, {
+    'GET /api/projects/p1/lip-sync/voiced-1/work-list': () => ({enabled: true, unavailable: null, workList, queued: [], newPasses: 2, newHeldUsd: 10}),
+    'POST /api/projects/p1/lip-sync/voiced-1/work-list': () => ({admitted: [{jobId: 'lip-a'}, {jobId: 'lip-b'}], skipped: [], heldUsd: 10, actualUsd: null}),
+  });
+  await flow.pitch({script: 'x', format: 'reel', tone: '', rightsAttested: true});
+  await flow.plan([]);
+  await flow.approveLook(true);
+  const done = await flow.approveRoughCut();
+  // One look at the list and one queue request; the passes are separate versions, never the shared film.
+  expect(calls.filter(call => call.path.includes('/lip-sync')).map(call => `${call.method} ${call.path}`)).toEqual([
+    'GET /api/projects/p1/lip-sync/voiced-1/work-list', 'POST /api/projects/p1/lip-sync/voiced-1/work-list']);
+  expect(calls.find(call => call.method === 'POST' && call.path.endsWith('/work-list')).body).toEqual({generationApproved: true, worklistRevision: 'w'.repeat(64)});
+  expect(notesOf(done)).toEqual(['Lip-sync: 2 on-camera lines are queued as lip-sync versions of the voiced cut ($10.00 held), each for you to review under Direct lip-sync; '
+    + 'the film here keeps its voiced cut. 1 on-camera line needs a face point chosen under Direct lip-sync first.']);
+});
+
+test('switched on with no policy, nothing is queued and the creator is told why', async () => {
+  const {flow, calls} = voicedFake({id: 'voiced-1', status: 'done', outputRevision: 'v'.repeat(64), output: {}, studioLipSync: true}, {
+    'GET /api/projects/p1/lip-sync/voiced-1/work-list': () => ({enabled: false, unavailable: 'Lip-sync is switched on for the studio, but no current provider policy is configured. Nothing is queued or held.',
+      workList: {revision: 'w'.repeat(64), passes: 1, needFacePoint: 0, heldUsd: null}, queued: [], newPasses: 1, newHeldUsd: null}),
+  });
+  await flow.pitch({script: 'x', format: 'reel', tone: '', rightsAttested: true});
+  await flow.plan([]);
+  await flow.approveLook(true);
+  const done = await flow.approveRoughCut();
+  expect(calls.some(call => call.method === 'POST' && call.path.includes('/lip-sync'))).toBe(false);
+  expect(notesOf(done)).toEqual(['Lip-sync: Lip-sync is switched on for the studio, but no current provider policy is configured. Nothing is queued or held.']);
+});
+
+test('switched on, a refused queue keeps the voiced cut and says so', async () => {
+  const {flow} = voicedFake({id: 'voiced-1', status: 'done', outputRevision: 'v'.repeat(64), output: {}, studioLipSync: true}, {
+    'GET /api/projects/p1/lip-sync/voiced-1/work-list': () => ({enabled: true, unavailable: null, workList: {revision: 'w'.repeat(64), passes: 1, needFacePoint: 0, heldUsd: 5}, queued: [], newPasses: 1, newHeldUsd: 5}),
+    'POST /api/projects/p1/lip-sync/voiced-1/work-list': () => { throw new Error('This film has reached its spending limit of $150.00'); },
+  });
+  await flow.pitch({script: 'x', format: 'reel', tone: '', rightsAttested: true});
+  await flow.plan([]);
+  await flow.approveLook(true);
+  const done = await flow.approveRoughCut();
+  expect(done.final.id).toBe('voiced-1');
+  expect(notesOf(done)).toEqual(['Lip-sync: the on-camera lines could not be queued (This film has reached its spending limit of $150.00); the film keeps its voiced cut.']);
+});
+
+// The server's answer as api() throws it for a refusal: its message, status and body (index.html).
+const refusal = (status, body) => Object.assign(new Error(body.error), {status, body});
+const studioRun = async lipSync => {
+  const {flow} = voicedFake({id: 'voiced-1', status: 'done', outputRevision: 'v'.repeat(64), output: {}, studioLipSync: true}, {
+    'GET /api/projects/p1/lip-sync/voiced-1/work-list': () => ({enabled: true, unavailable: null, workList: {revision: 'w'.repeat(64), passes: 2, needFacePoint: 0, heldUsd: 10}, queued: [], newPasses: 2, newHeldUsd: 10}),
+    'POST /api/projects/p1/lip-sync/voiced-1/work-list': lipSync,
+  });
+  await flow.pitch({script: 'x', format: 'reel', tone: '', rightsAttested: true});
+  await flow.plan([]);
+  await flow.approveLook(true);
+  const done = await flow.approveRoughCut();
+  expect(done.final.id).toBe('voiced-1');
+  return notesOf(done);
+};
+
+test('switched on, a budget refusal part-way through says which lines are queued and held, not that nothing was', async () => {
+  expect(await studioRun(() => { throw refusal(429, {error: 'This film has reached its spending limit of $40.00', reason: 'budget_exhausted', admitted: [{jobId: 'lip-a'}], reused: [], skipped: [], heldUsd: 5}); }))
+    .toEqual(['Lip-sync: 1 on-camera line is queued as lip-sync versions of the voiced cut ($5.00 held), each for you to review under Direct lip-sync; '
+      + 'the film here keeps its voiced cut. The rest were not queued (This film has reached its spending limit of $40.00).']);
+  // The same for a partial answer the server sends as a success (207).
+  expect(await studioRun(() => ({admitted: [{jobId: 'lip-a'}], reused: [], skipped: [], heldUsd: 5, error: 'This request key belongs to another pass. Review a new request.'})))
+    .toEqual(['Lip-sync: 1 on-camera line is queued as lip-sync versions of the voiced cut ($5.00 held), each for you to review under Direct lip-sync; '
+      + 'the film here keeps its voiced cut. The rest were not queued (This request key belongs to another pass. Review a new request.).']);
+  // An unexpected failure after an admission keeps its 500 but still lists what is queued and held.
+  expect(await studioRun(() => { throw refusal(500, {error: 'A later pass could not be queued just now. The passes listed here are queued and held.', admitted: [{jobId: 'lip-a'}], reused: [], skipped: [], heldUsd: 5}); }))
+    .toEqual(['Lip-sync: 1 on-camera line is queued as lip-sync versions of the voiced cut ($5.00 held), each for you to review under Direct lip-sync; '
+      + 'the film here keeps its voiced cut. The rest were not queued (A later pass could not be queued just now. The passes listed here are queued and held.).']);
+  // A refusal after passes that were only reused says nothing new was queued, and still why the rest were not.
+  expect(await studioRun(() => ({admitted: [], reused: [{jobId: 'lip-a'}], skipped: [], heldUsd: 0, error: 'This request key belongs to another pass. Review a new request.'})))
+    .toEqual(['Lip-sync: nothing new was queued. The rest were not queued (This request key belongs to another pass. Review a new request.).']);
+  // A refusal that admitted nothing is still "could not be queued".
+  expect(await studioRun(() => { throw refusal(429, {error: 'No room this month', reason: 'budget_exhausted', admitted: [], reused: [], skipped: [], heldUsd: 0}); }))
+    .toEqual(['Lip-sync: the on-camera lines could not be queued (No room this month); the film keeps its voiced cut.']);
+});
+
+test('switched on, an answer that admitted nothing new says so and never shows a dollar figure it does not have', async () => {
+  // A concurrent run already held the passes: they come back reused, with nothing new held.
+  const reused = await studioRun(() => ({admitted: [], reused: [{jobId: 'lip-a'}, {jobId: 'lip-b'}], skipped: [], heldUsd: 0, actualUsd: null}));
+  // An older server's answer with no hold at all.
+  const bare = await studioRun(() => ({admitted: [], skipped: []}));
+  for (const notes of [reused, bare]) { expect(notes).toEqual(['Lip-sync: nothing new was queued.']); expect(notes.join(' ')).not.toContain('NaN'); }
+});
+
 test('without an authorized voice catalogue the final keeps its temporary voices and nothing is recorded', async () => {
   const {flow, route} = fake();
   await flow.pitch({script: 'x', format: 'reel', tone: '', rightsAttested: true});
