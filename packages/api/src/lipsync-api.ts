@@ -43,9 +43,11 @@ const record=(value:unknown,keys:string[])=>{lipRecord(value,keys);return value;
  * list would take now, to the micro-dollar. A missing, malformed or different amount is refused (409) before
  * anything is held. `generationApproved` alone no longer queues anything.
  */
+/** Dollars as the hold is compared: cents when whole cents, otherwise to the micro-dollar, so a refusal never reads as equal amounts. */
+const exactUsd=(value:number):string=>{const cents=value.toFixed(2);return Math.round(Number(cents)*1e6)===Math.round(value*1e6)?cents:value.toFixed(6).replace(/0+$/,"");};
 export function assertStudioLipSyncHoldApproved(approved:unknown,heldUsd:number):void{
   if(typeof approved!=="number"||!Number.isFinite(approved)||approved<0)lipFail("Approve the lip-sync hold, in dollars, before queueing. Nothing is queued or held.");
-  if(Math.round(approved*1e6)!==Math.round(heldUsd*1e6))lipFail(`The lip-sync hold is now $${heldUsd.toFixed(2)}, not the $${approved.toFixed(2)} approved. Review the current hold before queueing. Nothing is queued or held.`);
+  if(Math.round(approved*1e6)!==Math.round(heldUsd*1e6))lipFail(`The lip-sync hold is now $${exactUsd(heldUsd)}, not the $${exactUsd(approved)} approved. Review the current hold before queueing. Nothing is queued or held.`);
 }
 export function studioLipSyncStop(error:unknown,progress:boolean):{status:number;error:string;reason?:string}|undefined{
   if(error instanceof BudgetError){const changed=/policy changed/.test(error.message);return {status:changed?409:429,error:error.message,reason:changed?"policy_changed":"budget_exhausted"};}
