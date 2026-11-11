@@ -58,13 +58,15 @@ The owner retries a failed line under Direct lip-sync, with their own key and fa
 - `queued` and `failed`, as above;
 - the new passes' total hold.
 
-`POST` with `{generationApproved: true, worklistRevision}` does the following:
+`POST` with `{generationApproved: true, worklistRevision, holdApprovedUsd}` does the following:
 
-1. Refuses with 503, holding nothing, when there is no current policy or no PostgreSQL provider service.
-2. Refuses a stale list.
-3. Checks the sum of the new passes' holds against the film's limit and the monthly cap before the first admission. A list that doesn't fit is refused (429) before anything is held. This check is made first, but the caps are enforced per pass, in step 5. Another admission in between can leave room for only some of the passes, so a list may be partly admitted. No cap is ever exceeded.
-4. Decodes each saved frame again and skips one whose hash differs.
-5. Admits each remaining line through `admitLipSync`, as an ordinary `hv-lipsync-plan/1` pass of the voiced cut under its fixed key. The ledger re-checks the film's limit and the month under its lock and reserves the hold.
+1. Refuses with 503, holding nothing, when there is no current policy.
+2. Refuses a stale list (409).
+3. Refuses (409), before anything is held, unless `holdApprovedUsd` is the creator's approval of exactly the hold this list would take now: a number equal to `newHeldUsd` to the micro-dollar (HV-022-24). A missing, malformed or different amount is refused, so `generationApproved` alone queues nothing. The amount a creator was shown goes stale when another run takes a line in between; they are then asked again.
+4. Refuses with 503, holding nothing, when there is no PostgreSQL provider service.
+5. Checks the sum of the new passes' holds against the film's limit and the monthly cap before the first admission. A list that doesn't fit is refused (429) before anything is held. This check is made first, but the caps are enforced per pass, in step 7. Another admission in between can leave room for only some of the passes, so a list may be partly admitted. No cap is ever exceeded.
+6. Decodes each saved frame again and skips one whose hash differs.
+7. Admits each remaining line through `admitLipSync`, as an ordinary `hv-lipsync-plan/1` pass of the voiced cut under its fixed key. The ledger re-checks the film's limit and the month under its lock and reserves the hold.
 
 The answer lists:
 
@@ -80,10 +82,28 @@ When a pass is refused part-way through the list, the answer still lists the pas
 - another refusal after at least one admission is a 207, with `error` and `stoppedAt`;
 - an unexpected failure after at least one admission, such as a lost database connection, is still a 500, and its answer lists the passes already queued with a plain `error` (its own text stays out of the answer).
 
-The passes are independent versions of the voiced cut. They are not chained, because each pass re-encodes the film and no owner point stands on the result. The studio's run adds a note saying:
+The passes are independent versions of the voiced cut. They are not chained, because each pass re-encodes the film and no owner point stands on the result.
+
+**The creator approves the lip-sync hold (HV-022-24).** With the switch on, the studio's run stops after the cast's voices are laid in, on its own step, "Your approval: the lip-sync hold". The step shows:
+
+- the voiced cut;
+- the lines the crew would lip-sync;
+- the number of passes and the policy's flat hold per pass;
+- the exact total the approval holds;
+- how many other on-camera lines still need a face point.
+
+Nothing is queued or held until the creator chooses:
+
+- **Approve the $N lip-sync hold** sends `holdApprovedUsd` with that amount. If the server refuses it because the hold has changed, nothing is held, and the step is shown again with the hold as it stands.
+- **Keep the voiced cut without lip-sync** asks for nothing, holds nothing, and adds a note saying so.
+
+Either way the run then goes on to the score and the titles, from the voiced cut. A list with no new passes asks the creator nothing. When a reopened feature finishes its earlier sequences, the run does not stop for them, so their lip-sync hold is not asked for: a note says what was ready and that nothing was queued or held.
+
+The studio's run adds a note saying:
 
 - what it queued and held, including part of a list when the answer lists `admitted`;
 - that nothing new was queued, when nothing was;
+- that the creator kept the voiced cut without lip-sync, when they declined;
 - how many lines still need a face point.
 
 It does not choose a pass as the export. A finished voiced cut's job view carries `studioLipSync: true` only while the switch is on, and only when the work list can read it: the selected output, with an applied take.
@@ -94,7 +114,16 @@ Not yet built, and needed for full automation:
 - one export that lays in every completed pass's retained `provider.mp4`;
 - saving a face point without running a pass.
 
-See `docs/loop/increments/HV-022-23.md`.
+### The owner's decisions (2026-11-11)
+
+The owner, Kevin, answered HV-022-23's open questions on 2026-11-11 (`docs/loop/increments/HV-022-24.md`):
+
+- **Price.** The flat hold per pass stays: the policy's one `heldUsd` per pass, bounded by `maxFrames`. There is no per-second pricing and no new policy schema.
+- **Reused face points.** An unreviewed pass keeps offering its face point. A pass reviewed `revise` or `cutaway`, or rated under 3, offers none, as HV-022-23 already built.
+- **Approval.** The creator approves the lip-sync hold separately from the film's approval, as described above.
+- **The first face point.** It will come from Veo or fal.ai, in a later increment. Nothing here calls either.
+
+See `docs/loop/increments/HV-022-23.md` and `docs/loop/increments/HV-022-24.md`.
 
 ## Operation and recovery
 

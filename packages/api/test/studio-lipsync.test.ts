@@ -33,8 +33,9 @@ const call=async(path:string,method="GET",body?:unknown,token=f.owner.token)=>{c
 const base=()=>"/api/projects/"+f.project.id+"/lip-sync";
 const jobs=()=>JSON.parse(readFileSync(join(root,"jobs.json"),"utf8"));
 const ledger=()=>{try{return readFileSync(join(root,"ledger.json"),"utf8");}catch{return null;}};
-// A view's media links are signed per request; everything else is compared exactly.
-const stable=(value:unknown)=>contentHash(JSON.parse(JSON.stringify(value).replace(/\/artifacts\/[^/"]+\//g,"/artifacts/signed/")));
+// A view's media links are signed per request, and its seconds-to-expiry count down with the clock, so two reads a
+// second boundary apart differ there (the absolute artifactUrlsExpireAt is still compared); everything else exactly.
+const stable=(value:unknown)=>contentHash(JSON.parse(JSON.stringify(value).replace(/\/artifacts\/[^/"]+\//g,"/artifacts/signed/").replace(/"artifactUrlsExpireInSeconds":\d+/g,'"artifactUrlsExpireInSeconds":"counting"')));
 const switched=async<T>(value:string|undefined,run:()=>Promise<T>)=>{if(value===undefined)delete process.env[STUDIO_LIPSYNC_ENV];else process.env[STUDIO_LIPSYNC_ENV]=value;try{return await run();}finally{delete process.env[STUDIO_LIPSYNC_ENV];}};
 
 test("switched off, the work list is an unknown route and every view hashes as before",async()=>{
@@ -62,7 +63,8 @@ test("switched on with no policy, the list holds nothing and queueing is refused
     expect(view.body.workList.items.map((i:any)=>[i.character,i.reason])).toEqual([["MARLA","ready"],["KEVIN","off-camera"],["MARLA","no-face-point"]]);
     expect(view.body.workList.heldUsd).toBeNull();expect(view.body.newHeldUsd).toBeNull();expect(view.body.newPasses).toBe(1);
     const refused=await call(base()+"/"+f.second.id+"/work-list","POST",{generationApproved:true,worklistRevision:view.body.workList.revision});
-    expect(refused.status).toBe(503);expect(refused.body.error).toContain("Nothing is queued or held");
+    // With no policy there is no hold to approve: the answer is that nothing can be queued at all.
+    expect(refused.status).toBe(503);expect((await call(base()+"/"+f.second.id+"/work-list","POST",{generationApproved:true,worklistRevision:view.body.workList.revision,holdApprovedUsd:5})).status).toBe(503);expect(refused.body.error).toContain("Nothing is queued or held");
     expect(JSON.stringify(jobs())).toBe(before);expect(ledger()).toBe(held);
   });
 },60000);
@@ -74,8 +76,14 @@ test("switched on with a policy but no PostgreSQL provider service, the list is 
     expect(view.body.enabled).toBe(false);expect(view.body.unavailable).toContain("PostgreSQL");expect(view.body.workList.heldUsd).toBe(5);expect(view.body.newHeldUsd).toBe(5);
     // The owner's pass sits on the first cut: there its line is already held, so nothing new would be queued.
     const first=await call(base()+"/"+f.first.id+"/work-list");expect(first.body.queued.map((q:any)=>q.shotId)).toEqual([f.spoken[0]!.shotId]);expect(first.body.newPasses).toBe(0);expect(first.body.newHeldUsd).toBe(0);
-    expect((await call(base()+"/"+f.second.id+"/work-list","POST",{generationApproved:true,worklistRevision:view.body.workList.revision})).status).toBe(503);
-    expect((await call(base()+"/"+f.second.id+"/work-list","POST",{generationApproved:true,worklistRevision:view.body.workList.revision,videoUrl:"https://untrusted.test"})).status).toBe(409);
+    // HV-022-24: the creator's approval must name the hold the list would take now, before the provider service is even asked.
+    const post=(extra:Record<string,unknown>)=>call(base()+"/"+f.second.id+"/work-list","POST",{generationApproved:true,worklistRevision:view.body.workList.revision,...extra});
+    const missing=await post({});expect(missing.status).toBe(409);expect(missing.body.error).toBe("Approve the lip-sync hold, in dollars, before queueing. Nothing is queued or held.");
+    const stale=await post({holdApprovedUsd:10});expect(stale.status).toBe(409);expect(stale.body.error).toBe("The lip-sync hold is now $5.00, not the $10.00 approved. Review the current hold before queueing. Nothing is queued or held.");
+    for(const holdApprovedUsd of ["5",4.999,Number.NaN,null,-5])expect((await post({holdApprovedUsd})).status).toBe(409);
+    // The approved hold to the micro-dollar reaches the next check, which still needs PostgreSQL.
+    expect((await post({holdApprovedUsd:5})).status).toBe(503);expect((await post({holdApprovedUsd:5.0000001})).status).toBe(503);
+    expect((await post({holdApprovedUsd:5,videoUrl:"https://untrusted.test"})).status).toBe(409);
     expect(JSON.stringify(jobs())).toBe(before);expect(ledger()).toBe(held);
   });}finally{delete process.env.HV_LIPSYNC_POLICY_FILE;}
 },60000);
