@@ -28,3 +28,14 @@ test("after an admission, a refused pass is a 207 and an unexpected failure a 50
   expect(lost.status).toBe(500);expect(lost.error).not.toContain("connection");expect(lost.error).toContain("queued and held");
   expect(studioLipSyncStop("not even an error",true)!.status).toBe(500);
 });
+
+test("a cast or voice permission withdrawn part-way is a 207 with its own refusal; before anything is held it is the route's",()=>{
+  const refused=Object.assign(new Error("This character's casting permission was withdrawn."),{name:"SafetyRefusal"});
+  expect(studioLipSyncStop(refused,true)).toEqual({status:207,error:"This character's casting permission was withdrawn."});
+  expect(studioLipSyncStop(refused,false)).toBeUndefined();
+});
+
+test("an unexpected failure after a face detection was held says the detections listed are held too (HV-022-25)",()=>{
+  const lost=studioLipSyncStop(new Error("connection terminated unexpectedly"),true,true)!;
+  expect(lost.status).toBe(500);expect(lost.error).not.toContain("connection");expect(lost.error).toContain("face detections listed here are held");
+});

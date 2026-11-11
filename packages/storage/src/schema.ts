@@ -175,3 +175,22 @@ export const musicCues = pgTable("hv_music_cues", {
   pgPolicy("hv_music_cues_api_update", { for: "update", to: "hv_api", using: sql`${t.projectId} = current_setting('hv.project_id', true)`,
     withCheck: sql`${t.projectId} = current_setting('hv.project_id', true) AND coalesce(current_setting('hv.project_id', true), '') <> ''` }),
   workerPolicy("hv_music_cues")]).enableRLS();
+
+/**
+ * HV-022-25: the studio's face detections, one row per detection key (`faceDetectionKey`): the cut, shot, line,
+ * decoded frame and policy. Written by the API when a detection is admitted (its hold an ordinary `hv_reservations`
+ * row, stage `face-detection`, in the same transaction) and updated once when its result is recorded. The API role
+ * cannot write cost events or end a hold, so the worker posts a settled detection's flat hold as its cost and stamps
+ * `posted_at`, as it does for a music cue. Read and written only within the admitting film; never deleted.
+ */
+export const faceDetections = pgTable("hv_face_detections", {
+  id: text("id").primaryKey(), projectId: text("project_id").notNull(), status: text("status").notNull(),
+  heldUsd: money("held_usd").notNull(), body: jsonb("body").notNull(), createdAt: time("created_at").notNull().defaultNow(), postedAt: time("posted_at"),
+}, t => [index("hv_face_detections_project_idx").on(t.projectId), index("hv_face_detections_unposted_idx").on(t.postedAt),
+  check("hv_face_detections_status_check", sql`${t.status} in ('held','settled')`),
+  check("hv_face_detections_money_check", sql`${t.heldUsd} >= 0`),
+  pgPolicy("hv_face_detections_api_read", { for: "select", to: "hv_api", using: sql`${t.projectId} = current_setting('hv.project_id', true)` }),
+  pgPolicy("hv_face_detections_api_insert", { for: "insert", to: "hv_api", withCheck: sql`${t.projectId} = current_setting('hv.project_id', true) AND coalesce(current_setting('hv.project_id', true), '') <> ''` }),
+  pgPolicy("hv_face_detections_api_update", { for: "update", to: "hv_api", using: sql`${t.projectId} = current_setting('hv.project_id', true)`,
+    withCheck: sql`${t.projectId} = current_setting('hv.project_id', true) AND coalesce(current_setting('hv.project_id', true), '') <> ''` }),
+  workerPolicy("hv_face_detections")]).enableRLS();

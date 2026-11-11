@@ -6,6 +6,7 @@ import {assertGraphicIdempotency,assertGraphicPermission,validateGraphicJob} fro
 import {assertDeliveryIdempotency,assertDeliveryPermission,assertDeliverySourceAvailable,assertDeliverySourcePermission,validateDeliveryJob} from "../../planner/src/delivery-jobs";
 import {filmPlan,sameSequence} from "../../planner/src/sequences";
 import {contentHash} from "../../generator/src/capabilities";
+import {FACE_DETECTION_STALE_MS,settleFaceDetection,validateFaceDetectionRecord} from "../../planner/src/face-detection";
 import {assertSoundIdempotency,assertSoundPermission,assertSoundSourceAvailable,validateSoundJob} from "../../planner/src/sound-jobs";
 import {assertEditIdempotency,assertEditPermission,assertEditBindingAvailable,validateEditJob,validateEditOutput} from "../../planner/src/edit-jobs";
 import {assertEditAssemblyIdempotency,validateEditAssemblyJob} from "../../planner/src/edit-assembly-job-context";
@@ -65,7 +66,7 @@ export class PostgresCostLedger {
     await this.locked((tx, storedCap) => this.reserveWithin(tx, storedCap, jobId, stage, amountUsd, monthlyCapUsd, now, projectId), monthlyCapUsd);
   }
   /** project_id must equal the transaction's hv.project_id for hv_api (policy hv_reservations_api_admit); hv_worker writes NULL. */
-  protected async reserveWithin(tx: SQL, storedCap: number, jobId: string, stage: JobStage | "music-cue", amountUsd: number, monthlyCapUsd: number, now: Date, projectId: string | null, provider?: string): Promise<void> {
+  protected async reserveWithin(tx: SQL, storedCap: number, jobId: string, stage: JobStage | "music-cue" | "face-detection", amountUsd: number, monthlyCapUsd: number, now: Date, projectId: string | null, provider?: string): Promise<void> {
       if (monthlyCapUsd < storedCap) await tx`update hv_budget_accounts set monthly_cap_usd = ${monthlyCapUsd}, updated_at = now() where id = 'operator'`;
       const previous = (await tx`select body from hv_reservations where job_id = ${jobId}`)[0]?.body as BudgetReservation | undefined;
       if (previous) {
@@ -536,8 +537,10 @@ export class PostgresCostLedger {
   async reconcile(activeJobIds: Set<string>, graceMs = 60_000, now = Date.now()): Promise<void> {
     await this.locked(async tx => {
       await postMusicCuesWithin(tx);
-      // A music cue's hold is not a job's: it ends only when its cue does (HV-024-11).
-      const rows = await tx`select job_id from hv_reservations where created_at < ${new Date(now - graceMs).toISOString()} and stage <> 'music-cue'`;
+      await postFaceDetectionsWithin(tx, now);
+      // A music cue's hold is not a job's: it ends only when its cue does (HV-024-11). Nor is a face
+      // detection's (HV-022-25): it ends only when its settled cost is posted.
+      const rows = await tx`select job_id from hv_reservations where created_at < ${new Date(now - graceMs).toISOString()} and stage not in ('music-cue', 'face-detection')`;
       for (const row of rows) if (!activeJobIds.has(row.job_id)) await this.releaseIn(tx, row.job_id);
     });
   }
@@ -591,6 +594,40 @@ export async function postMusicCuesWithin(tx: SQL): Promise<number> {
     }
     await tx`delete from hv_reservations where job_id = ${row.id} and stage = 'music-cue'`;
     await tx`update hv_music_cues set posted_at = now() where id = ${row.id}`;
+  }
+  return rows.length;
+}
+
+/**
+ * HV-022-25: post every settled face detection to the generation ledger, under the caller's ledger lock.
+ *
+ * A detection holds its policy's flat amount and spends it whether or not a face was found (the provider bills
+ * compute, not results), so its whole hold becomes its cost event, once (its event key), and the hold goes.
+ *
+ * Review S1: a detection still held `FACE_DETECTION_STALE_MS` after it was admitted never had its result recorded
+ * (the API process stopped, or the write failed). The detector may have been asked, so it is settled here as
+ * `failed` -- no point, the line left to the owner -- and its whole hold is posted like any other: conservative, and
+ * what the creator approved ("spent whether or not a face is found"). The detector is never asked again. A row whose
+ * record no longer validates is left held, still counting against the caps, for the operator to repair
+ * (docs/LIP-SYNC.md).
+ */
+export async function postFaceDetectionsWithin(tx: SQL, now = Date.now(), staleMs = FACE_DETECTION_STALE_MS): Promise<number> {
+  const stale = await tx`select id, body from hv_face_detections where posted_at is null and status = 'held' and created_at < ${new Date(now - staleMs).toISOString()} order by id for update`;
+  for (const row of stale) {
+    let settled;
+    try { settled = settleFaceDetection(validateFaceDetectionRecord(row.body), {outcome: "failed", faces: null, point: null, responseSha256: null}, now); } catch { continue; }
+    await tx`update hv_face_detections set status = 'settled', body = ${settled}::jsonb where id = ${row.id} and status = 'held'`;
+  }
+  const rows = await tx`select id, project_id, held_usd, body from hv_face_detections where posted_at is null and status = 'settled' order by id for update`;
+  for (const row of rows) {
+    const usd = Number(row.held_usd), body = row.body as {shotId?: string; capabilityRevision?: string};
+    const event: CostEvent = {eventId: "face-detection:" + row.id, at: new Date().toISOString(), projectId: row.project_id, shotId: String(body.shotId ?? "face-detection"), jobId: row.id, stage: "face-detection",
+      provider: "fal", model: "fal-ai/moondream-next/detection", prompt_tokens: 0, output_frames: 0, gpu_seconds: 0, total_cost_usd: usd};
+    await tx`insert into hv_cost_events (id, event_key, project_id, job_id, attempt_id, stage, provider, total_usd, body, created_at)
+      values (${crypto.randomUUID()}, ${event.eventId!}, ${row.project_id}, ${row.id}, ${null}, 'face-detection', 'fal', ${usd}, ${event}::jsonb, ${event.at})
+      on conflict (event_key) do nothing`;
+    await tx`delete from hv_reservations where job_id = ${row.id} and stage = 'face-detection'`;
+    await tx`update hv_face_detections set posted_at = now() where id = ${row.id}`;
   }
   return rows.length;
 }

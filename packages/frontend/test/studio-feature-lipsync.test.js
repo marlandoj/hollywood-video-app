@@ -160,7 +160,7 @@ for (const decision of ['approve', 'decline']) {
 }
 
 /** A resumed two-sequence feature, both finals made and their takes recorded, its voiced cuts marked `studioLipSync`. */
-function resumed() {
+function resumed(view = lipView) {
   const calls = [];
   const sequence = number => ({number, of: 2, firstScene: number, lastScene: number, planRevision: 'split'});
   const jobs = [
@@ -194,7 +194,7 @@ function resumed() {
     }
     if (dialogue && method === 'POST') return {jobId: `voices-${dialogue[1]}`, admitted: true};
     if (/^\/api\/projects\/p1\/lip-sync\/voices-f\d\/work-list$/.test(path)) {
-      if (method === 'GET') return lipView();
+      if (method === 'GET') return view();
       throw new Error('queued on a resume');
     }
     if (path.startsWith('/api/projects/p1/sound-mixes/')) throw new Error('the mixer is down');
@@ -231,4 +231,18 @@ test('a resumed feature with studio lip-sync on never stops on the lip-sync step
     .toEqual([[{number: 1, jobId: 'voices-f1'}, {number: 2, jobId: 'voices-f2'}]]);
   await expect(flow.approveLipSync()).rejects.toThrow('Review the lip-sync hold first.');
   await expect(flow.declineLipSync()).rejects.toThrow('Review the lip-sync hold first.');
+});
+
+// HV-022-25 (review O3): a resumed run whose list has only lines for the face-point finder says so in a sentence of its
+// own, never "0 on-camera lines are ready".
+test('a resumed feature whose list only has lines to look at for a face says so, and looks at none', async () => {
+  const items = [{...LIP_ITEMS[0], included: false, reason: 'no-face-point', faceDetection: {status: 'planned', frame: 14, heldUsd: 0.02}}];
+  const view = () => ({...lipView(), workList: {...lipView().workList, items, passes: 0, needFacePoint: 1, heldUsd: 0, faceDetection: {planned: 1, heldUsd: 0.02, heldUsdPerDetection: 0.02}},
+    newPasses: 0, newHeldUsd: 5.02, faceDetection: {newDetections: 1, heldUsdPerDetection: 0.02, heldUsd: 0.02, passHeldUsd: 5, spentWithoutFace: true, lines: []}});
+  const {flow, calls} = resumed(view);
+  const state = await flow.resumeFeature({tone: 'warm'});
+  const note = 'Lip-sync: 1 on-camera line could have had the speaker\'s face looked for and been lip-synced ($5.02 at most to hold), but a resumed run doesn\'t ask for the lip-sync hold, '
+    + 'so no face was looked for and nothing was queued or held. Choose its face point under Direct lip-sync.';
+  for (const number of [1, 2]) expect(state.finishes[number].notes[0]).toBe(note);
+  expect(calls.filter(call => call.method === 'POST' && call.path.includes('/lip-sync/'))).toEqual([]);
 });

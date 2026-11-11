@@ -9,6 +9,8 @@ import {createLipSyncPlan,retainLipSyncSource} from "../../planner/src/lipsync";
 import {previewLipSyncFrame} from "../../generator/src/lipsync-media";
 import {contentHash} from "../../generator/src/capabilities";
 import {STUDIO_LIPSYNC_ENV} from "../../planner/src/lipsync-worklist";
+import {faceDetectionPolicy,FACE_DETECTION_POLICY_ENV} from "../../planner/src/face-detection";
+import {FalFaceDetector} from "../../generator/src/fal-face-detection";
 
 /**
  * HV-022-23: the studio's lip-sync work list through the API, on the file store. Off, the route and every view are as
@@ -115,4 +117,24 @@ test("only a voiced cut the work list can read says so: the film and every lip-s
     expect((await call("/api/jobs/"+f.second.id)).body.studioLipSync).toBe(true);
     for(const id of [f.film.id,pass.id,foreign])expect((await call("/api/jobs/"+id)).body.studioLipSync).toBeUndefined();
   });
+},60000);
+
+test("HV-022-25: with a detector and the finder's policy but no PostgreSQL provider service, nothing changes and nothing is detected",async()=>{
+  const sent:string[]=[],detector=new FalFaceDetector({apiKey:"fixture key",fetchImpl:(async(url:string|URL|Request)=>{sent.push(String(url));return new Response(JSON.stringify({text_output:'{"points":[{"x":0.5,"y":0.5}]}'}));}) as typeof fetch});
+  const finder=createApiServer({port:0,hostname:"127.0.0.1",queuePath:join(root,"jobs.json"),statePath:join(root,"projects.json"),costLedgerPath:join(root,"ledger.json"),artifactRoot:f.artifacts,rateLimit:{api:{limit:10000,windowMs:60000}},faceDetector:detector});
+  const policyPath=join(root,"face-detection-policy.json");
+  writeFileSync(policyPath,JSON.stringify(faceDetectionPolicy({label:"fal · closed fixture",accountRevision:"a".repeat(64),priceEvidenceSha256:"f".repeat(64),heldUsd:.02,validFrom:"2026-01-01T00:00:00.000Z",expiresAt:"2099-01-01T00:00:00.000Z"})));
+  process.env.HV_LIPSYNC_POLICY_FILE=join(root,"lipsync-policy.json");
+  const at=async(on:ApiServer,path:string,method="GET",body?:unknown)=>{const r=await fetch(new URL(path,on.url),{method,headers:{authorization:"Bearer "+f.owner.token,"content-type":"application/json"},...(body===undefined?{}:{body:JSON.stringify(body)})});return {status:r.status,body:await r.json() as any};};
+  try{await switched("1",async()=>{
+    const before=JSON.stringify(jobs()),held=ledger(),plainView=await at(server,base()+"/"+f.second.id+"/work-list");
+    process.env[FACE_DETECTION_POLICY_ENV]=policyPath;
+    try{
+      const view=await at(finder,base()+"/"+f.second.id+"/work-list");
+      expect(view.body).toEqual(plainView.body);expect(view.body.faceDetection).toBeUndefined();expect(view.body.workList.faceDetection).toBeUndefined();
+      expect(view.body.workList.items[2]).toMatchObject({reason:"no-face-point"});expect(view.body.workList.items[2].faceDetection).toBeUndefined();
+      expect((await at(finder,base()+"/"+f.second.id+"/work-list","POST",{generationApproved:true,worklistRevision:view.body.workList.revision,holdApprovedUsd:view.body.newHeldUsd})).status).toBe(503);
+    }finally{delete process.env[FACE_DETECTION_POLICY_ENV];}
+    expect(sent).toEqual([]);expect(JSON.stringify(jobs())).toBe(before);expect(ledger()).toBe(held);
+  });}finally{delete process.env.HV_LIPSYNC_POLICY_FILE;await finder.stop(true);}
 },60000);

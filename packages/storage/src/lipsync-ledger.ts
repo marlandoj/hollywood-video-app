@@ -10,8 +10,15 @@ import {validateAudioInvoice,validateAudioAllocation,type AudioInvoice,type Audi
 import {validateLipSyncIntent,validateLipSyncReceipt,assertLipSyncObservation,type LipSyncIntent,type LipSyncJournal,type LipSyncReceipt,type LipSyncReservation} from "../../generator/src/sync-lipsync";
 import {assertLipSyncIdempotency,assertLipSyncPermission,assertLipSyncSourceAvailable,validateLipSyncJob,validateLipSyncPrepared} from "../../planner/src/lipsync";
 import {lipDate,lipHash,lipId,lipNumber,lipRecord,lipSame,validateLipSyncPolicy,type LipSyncPolicy} from "../../planner/src/lipsync-policy";
+import {settleFaceDetection,validateFaceDetectionPolicy,validateFaceDetectionRecord,type FaceDetectionPolicy,type FaceDetectionRecord} from "../../planner/src/face-detection";
+import type {FaceDetectionResult} from "../../generator/src/fal-face-detection";
 
 export type LipSyncPolicyLookup=()=>LipSyncPolicy|undefined|Promise<LipSyncPolicy|undefined>;
+export type FaceDetectionPolicyLookup=()=>FaceDetectionPolicy|undefined|Promise<FaceDetectionPolicy|undefined>;
+const detectionRecord=(row:Record<string,any>):FaceDetectionRecord=>{
+  const record=validateFaceDetectionRecord(row.body as FaceDetectionRecord);
+  if(record.id!==row.id||record.projectId!==row.project_id||record.status!==row.status||Number(row.held_usd)!==record.heldUsd)throw new BudgetError("The face detection ledger is unreadable; no detection is admitted until it is repaired.");return record;
+};
 export interface LipSyncInvoice extends Omit<AudioInvoice,"schema"> {schema:"hv-lipsync-invoice-allocation/1"}
 export interface LipSyncAllocation extends Omit<AudioAllocation,"schema"> {schema:"hv-lipsync-allocation/1"}
 export interface StoredLipSyncAttempt {id:string;projectId:string;jobId:string;shotId:string;workerId:string;leaseVersion:number;status:"running"|"unknown"|"succeeded"|"failed";estimatedUsd:number;actualUsd:number|null;createdAt:string;updatedAt:string;
@@ -57,6 +64,41 @@ export class PostgresLipSyncLedger extends PostgresCostLedger {
       await this.assertFilmWithin(tx,projectId,policy.heldUsd,filmCapUsd);
       await this.reserveWithin(tx,cap,input.id,input.stage,policy.heldUsd,monthlyCapUsd,new Date(now),projectId);return new PostgresJobStore(this.database).enqueueWithin(tx,input);
     },monthlyCapUsd));
+  }
+  /**
+   * HV-022-25: one face detection's flat hold, admitted beside `admitLipSync` under the same ledger lock: the film is
+   * still open, the operator's detection policy is the one the record names, the film's limit and the month's cap
+   * hold it (`assertFilmWithin`, `reserveWithin`), and its record is written in the same transaction. The record's
+   * id is its detection key, so a replay -- a retry, or a concurrent request for the same frame -- returns the record
+   * already held and holds nothing new. A refusal at any step writes nothing.
+   */
+  async admitFaceDetection(projectId:string,value:FaceDetectionRecord,lookup:FaceDetectionPolicyLookup,monthlyCapUsd:number,now=Date.now(),filmCapUsd?:number):Promise<{record:FaceDetectionRecord;replay:boolean}>{
+    const record=validateFaceDetectionRecord(value);
+    if(record.projectId!==projectId||record.status!=="held"||!Number.isFinite(monthlyCapUsd)||monthlyCapUsd<=0)throw new BudgetError("Invalid face detection admission.");
+    return this.database.forProject(projectId,tx=>this.lockWithin(tx,async(tx,cap)=>{
+      const existing=(await tx`select * from hv_face_detections where id=${record.id}`)[0];
+      if(existing){const prior=detectionRecord(existing);if(prior.projectId!==projectId||prior.requestHash!==record.requestHash||prior.heldUsd!==record.heldUsd)throw new BudgetError("This face detection key belongs to another detection.");return {record:prior,replay:true};}
+      if(!(await tx`select id from hv_projects where id=${projectId} and taken_down_at is null and expired_at is null for update`).length)throw new BudgetError("This film is no longer open for face detection.");
+      const current=await lookup();let policy:FaceDetectionPolicy|undefined;try{policy=current?validateFaceDetectionPolicy(current,now):undefined;}catch{policy=undefined;}
+      if(!policy||policy.revision!==record.policyRevision||policy.heldUsd!==record.heldUsd)throw new BudgetError("The face detection policy changed. Review the current hold.");
+      await this.assertFilmWithin(tx,projectId,record.heldUsd,filmCapUsd);
+      await this.reserveWithin(tx,cap,record.id,"face-detection",record.heldUsd,monthlyCapUsd,new Date(now),projectId,"fal");
+      await tx`insert into hv_face_detections (id,project_id,status,held_usd,body,created_at) values (${record.id},${projectId},'held',${record.heldUsd},${record}::jsonb,${record.admittedAt})`;
+      return {record,replay:false};
+    },monthlyCapUsd));
+  }
+  /** HV-022-25: the result of a held detection, recorded once. A detection that already has its result keeps it. */
+  async settleFaceDetection(projectId:string,id:string,result:FaceDetectionResult,now=Date.now()):Promise<FaceDetectionRecord>{
+    return this.database.forProject(projectId,async tx=>{
+      const row=(await tx`select * from hv_face_detections where id=${id} and project_id=${projectId} for update`)[0];if(!row)throw new BudgetError("Unknown face detection.");
+      const prior=detectionRecord(row);if(prior.status!=="held")return prior;
+      const next=settleFaceDetection(prior,result,now);
+      await tx`update hv_face_detections set status='settled',body=${next}::jsonb where id=${id} and project_id=${projectId} and status='held'`;return next;
+    });
+  }
+  /** HV-022-25: the film's face detections, every status. */
+  async faceDetections(projectId:string):Promise<FaceDetectionRecord[]>{
+    return this.database.forProject(projectId,async tx=>(await tx`select * from hv_face_detections where project_id=${projectId} order by created_at,id`).map(detectionRecord));
   }
   private async held(tx:SQL,job:Job,workerId:string,now:number):Promise<Job>{
     const project=(await tx`select body from hv_projects where id=${job.projectId} and taken_down_at is null and expired_at is null for share`)[0]?.body as PersistedProject|undefined;

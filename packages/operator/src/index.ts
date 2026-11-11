@@ -8,7 +8,8 @@ import { assertFilmBudget } from "./film-budget";
  * What a hold or a cost is for: a job's stage, or -- HV-024-11 -- a generated music cue, which is
  * paid for while the API request that asked for it is open and so has no job of its own.
  */
-export type CostStage = import("../../queue/src/index").JobStage | "music-cue";
+/** HV-022-25: `face-detection` is the studio's face-point finder's flat hold (packages/planner/src/face-detection.ts). */
+export type CostStage = import("../../queue/src/index").JobStage | "music-cue" | "face-detection";
 export interface CostEvent extends CostRecord { eventId?: string; attemptId?: string; routeDecisionId?: string; at: string; projectId: string; shotId: string; jobId?: string; stage?: CostStage }
 export interface BudgetReservation { jobId: string; stage: CostStage; amountUsd: number; remainingUsd: number; createdAt: string;
   /** HV-022-17: the voice vendor an audio take's hold is committed to, so its line can be read without the job. */
