@@ -6,7 +6,7 @@
 import {expect, setDefaultTimeout, test} from 'bun:test';
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {BLOCKING_CONCERNS, PERSONA_TITLES, STEP_TITLES, createStudioFlow, lipSyncSummary} from '../src/studio.js';
+import {BLOCKING_CONCERNS, PERSONA_TITLES, STEP_TITLES, createStudioFlow, exactUsd, lipSyncSummary} from '../src/studio.js';
 import {ambienceCues, ambienceScenes} from '../../planner/src/sound-ambience.ts';
 
 const SRC = join(import.meta.dir, '..', 'src');
@@ -355,6 +355,29 @@ test('switched on, an approved amount the server no longer holds is refused befo
   expect(done.step).toBe('final');
   expect(notesOf(done)).toEqual(['Lip-sync: 1 on-camera line is queued as lip-sync versions of the voiced cut ($5.00 held), each for you to review under Direct lip-sync; '
     + 'the film here keeps its voiced cut. 1 on-camera line needs a face point chosen under Direct lip-sync first.']);
+});
+
+test('switched on, a refusal that leaves the list and its hold as they were is not asked again: the voiced cut is finished', async () => {
+  const {flow, calls} = await toLipSync({
+    // The character's lip-sync permission was withdrawn: the list still reads the same, and every approval would be refused.
+    'POST /api/projects/p1/lip-sync/voiced-1/work-list': () => { throw Object.assign(new Error('Lip-sync permission for this character was withdrawn.'), {status: 409, body: {error: 'Lip-sync permission for this character was withdrawn.'}}); },
+  });
+  const done = await flow.approveLipSync();
+  expect(done.step).toBe('final');
+  expect(done.final.id).toBe('voiced-1');
+  expect(calls.filter(call => call.method === 'POST' && call.path.endsWith('/work-list'))).toHaveLength(1);
+  expect(notesOf(done)).toEqual(['Lip-sync: the on-camera lines could not be queued (Lip-sync permission for this character was withdrawn.); nothing was held, and the film keeps its voiced cut.']);
+});
+
+test('the lip-sync hold is shown as it is enforced: whole cents as cents, anything finer to the micro-dollar', () => {
+  expect(exactUsd(10)).toBe('10.00');
+  expect(exactUsd(5.5)).toBe('5.50');
+  expect(exactUsd(0.999)).toBe('0.999');
+  expect(exactUsd(1.000001)).toBe('1.000001');
+  expect(exactUsd(undefined)).toBe('0.00');
+  const summary = lipSyncSummary(lipView({newPasses: 3, newHeldUsd: 0.999, workList: {...lipView().workList, heldUsdPerPass: 0.333}}));
+  expect(summary.held).toBe('0.999');
+  expect(summary.text).toContain('at $0.333 each. Approving holds $0.999');
 });
 
 test('switched on, a list with nothing new to hold asks the creator nothing', async () => {

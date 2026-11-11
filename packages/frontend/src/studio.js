@@ -545,7 +545,7 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
     return {view};
   }
   /** A resumed feature's earlier sequences are finished without stopping, so their lip-sync hold is not asked for. */
-  const lipSyncNotAsked = view => `Lip-sync: ${lipSyncLines(view.newPasses)} ${view.newPasses === 1 ? "is" : "are"} ready to lip-sync ($${(Number(view.newHeldUsd) || 0).toFixed(2)} to hold), `
+  const lipSyncNotAsked = view => `Lip-sync: ${lipSyncLines(view.newPasses)} ${view.newPasses === 1 ? "is" : "are"} ready to lip-sync ($${exactUsd(view.newHeldUsd)} to hold), `
     + `but a resumed run doesn't ask for the lip-sync hold, so nothing was queued or held. Lip-sync ${view.newPasses === 1 ? "it" : "them"} under Direct lip-sync.${lipSyncNeeds(view)}`;
   /** `{note}` once asked, or `{changed}` when the server refused the approved amount and held nothing. */
   async function lipSyncQueue(voiced, view) {
@@ -1040,11 +1040,17 @@ export function createStudioFlow({api, getProject, setProject, wait = ms => new 
         let review;
         try { review = await lipSyncReview(voiced); }
         catch (error) { review = {note: `Lip-sync: the on-camera lines could not be read again (${error.message}); nothing was queued or held, and the film keeps its voiced cut.`}; }
-        if (review.view) {
+        // Asked again only when the list or its hold really moved. A refusal that leaves both as they were (a
+        // permission withdrawn, a source that changed under the check) would refuse every approval the same way.
+        const moved = review.view && (review.view.workList?.revision !== view.workList?.revision
+          || Math.round(Number(review.view.newHeldUsd) * 1e6) !== Math.round(Number(view.newHeldUsd) * 1e6));
+        if (moved) {
           state = {...state, lipSync: {...state.lipSync, view: review.view, changed: queued.changed}, spend: await spend()};
           return state;
         }
-        queued = {note: review.note ?? "Lip-sync: nothing new was queued."};
+        queued = {note: review.view
+          ? `Lip-sync: the on-camera lines could not be queued (${queued.changed}); nothing was held, and the film keeps its voiced cut.`
+          : review.note ?? "Lip-sync: nothing new was queued."};
       }
       if (queued.note) notes.push(queued.note);
       return afterLipSync();
@@ -1097,13 +1103,19 @@ export function spendText(state) {
  * HV-022-24: what the creator is asked to approve on the lip-sync step: the lines the crew would lip-sync, one
  * pass each at the policy's flat hold (the owner's decision of 2026-11-11), and the exact total the approval holds.
  */
+/** A lip-sync hold as it is enforced: cents when it is whole cents, otherwise to the micro-dollar the server compares. */
+export function exactUsd(value) {
+  const amount = Number(value) || 0, cents = amount.toFixed(2);
+  return Math.round(Number(cents) * 1e6) === Math.round(amount * 1e6) ? cents : amount.toFixed(6).replace(/0+$/, "");
+}
+
 export function lipSyncSummary(view) {
   const list = view.workList ?? {}, queued = view.queued ?? [], count = view.newPasses ?? 0;
   const fresh = (list.items ?? []).filter(item => item.included && !queued.some(q => q.shotId === item.shotId && q.lineIndex === item.lineIndex));
-  const held = (Number(view.newHeldUsd) || 0).toFixed(2), each = Number(list.heldUsdPerPass), waiting = list.needFacePoint ?? 0;
+  const held = exactUsd(view.newHeldUsd), each = Number(list.heldUsdPerPass), waiting = list.needFacePoint ?? 0;
   return {held, lines: fresh.map(item => `${item.character}: “${item.text}”`),
     text: `The crew can lip-sync ${count} on-camera line${count === 1 ? "" : "s"} of the voiced cut, as ${count} pass${count === 1 ? "" : "es"}`
-      + `${list.heldUsdPerPass != null && Number.isFinite(each) ? ` at $${each.toFixed(2)} each` : ""}. Approving holds $${held} against this film's limit; `
+      + `${list.heldUsdPerPass != null && Number.isFinite(each) ? ` at $${exactUsd(each)} each` : ""}. Approving holds $${held} against this film's limit; `
       + "nothing is queued or held unless you approve.",
     needs: waiting ? `${waiting} other on-camera line${waiting === 1 ? " needs" : "s need"} a face point chosen under Direct lip-sync first.` : ""};
 }
